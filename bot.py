@@ -11,6 +11,7 @@ app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")  # ваш личный chat_id, узнать через /whoami
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 GROQ_API = "https://api.groq.com/openai/v1/chat/completions"
@@ -56,6 +57,8 @@ awaiting_reminder = set()         # ждём текст напоминания
 
 reminders = []  # список словарей: {chat_id, due_ts, text}
 reminders_lock = threading.Lock()
+
+known_users = set()  # все chat_id, кто писал боту — для рассылки (/broadcast)
 
 
 # ---------------------------------------------------------------------------
@@ -197,13 +200,17 @@ def get_weather(city: str) -> str:
 
     wx = requests.get(
         "https://api.open-meteo.com/v1/forecast",
-        params={"latitude": lat, "longitude": lon, "current_weather": "true"},
+        params={
+            "latitude": lat,
+            "longitude": lon,
+            "current": "temperature_2m,wind_speed_10m,weather_code",
+        },
         timeout=15,
     ).json()
-    cur = wx.get("current_weather") or {}
-    temp = cur.get("temperature")
-    wind = cur.get("windspeed")
-    code = cur.get("weathercode")
+    cur = wx.get("current") or {}
+    temp = cur.get("temperature_2m")
+    wind = cur.get("wind_speed_10m")
+    code = cur.get("weather_code")
 
     if temp is None:
         return "Не удалось получить данные о погоде для этого города, попробуйте ещё раз."
@@ -301,6 +308,32 @@ def webhook():
 
     chat_id = message["chat"]["id"]
     user_text = message["text"].strip()
+    known_users.add(chat_id)
+
+    # --- /whoami — узнать свой chat_id (нужен, чтобы настроить ADMIN_CHAT_ID) ---
+    if user_text == "/whoami":
+        send_message(chat_id, f"Ваш chat_id: {chat_id}")
+        return "ok"
+
+    # --- /broadcast — рассылка всем пользователям, доступна только владельцу ---
+    if user_text.startswith("/broadcast"):
+        if not ADMIN_CHAT_ID or str(chat_id) != str(ADMIN_CHAT_ID):
+            # Для всех остальных команда выглядит как несуществующая
+            pass
+        else:
+            text = user_text[len("/broadcast"):].strip()
+            if not text:
+                send_message(chat_id, "Напишите текст рассылки после команды, например:\n/broadcast Добавил новую функцию!")
+            else:
+                sent, failed = 0, 0
+                for uid in known_users:
+                    try:
+                        send_message(uid, f"📢 {text}")
+                        sent += 1
+                    except Exception:
+                        failed += 1
+                send_message(chat_id, f"Рассылка отправлена. Успешно: {sent}, ошибок: {failed}")
+            return "ok"
 
     # --- /start ---
     if user_text == "/start":
