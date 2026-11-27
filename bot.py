@@ -174,54 +174,22 @@ def handle_image_generation(chat_id, raw_prompt, style_key):
 
 
 # ---------------------------------------------------------------------------
-# Погода (Open-Meteo, бесплатно, без ключа)
+# Погода (wttr.in, бесплатно, без ключа и без общего дневного лимита)
 # ---------------------------------------------------------------------------
-WEATHER_CODES = {
-    0: "ясно", 1: "преимущественно ясно", 2: "переменная облачность", 3: "пасмурно",
-    45: "туман", 48: "изморозь", 51: "лёгкая морось", 61: "небольшой дождь",
-    63: "дождь", 65: "сильный дождь", 71: "небольшой снег", 73: "снег",
-    75: "сильный снег", 80: "ливень", 95: "гроза",
-}
-
-
 def get_weather(city: str) -> str:
-    geo = requests.get(
-        "https://geocoding-api.open-meteo.com/v1/search",
-        params={"name": city, "count": 1, "language": "ru", "format": "json"},
+    resp = requests.get(
+        f"https://wttr.in/{requests.utils.quote(city)}",
+        params={"format": "3", "lang": "ru", "M": ""},
+        headers={"User-Agent": "curl/8.0"},  # wttr.in лучше отвечает с таким заголовком
         timeout=15,
-    ).json()
-    results = geo.get("results")
-    if not results:
-        return f"Не нашёл город «{city}», проверьте название."
+    )
+    text = resp.text.strip()
 
-    place = results[0]
-    lat, lon = place["latitude"], place["longitude"]
-    name = place.get("name", city)
+    if not text or "Unknown location" in text or resp.status_code != 200:
+        print("Пустой/некорректный ответ погоды:", resp.status_code, text)
+        return f"Не нашёл город «{city}», проверьте название, или сервис временно недоступен."
 
-    wx = requests.get(
-        "https://api.open-meteo.com/v1/forecast",
-        params={
-            "latitude": lat,
-            "longitude": lon,
-            "current": "temperature_2m,wind_speed_10m,weather_code",
-        },
-        timeout=15,
-    ).json()
-
-    if wx.get("error"):
-        return f"Ошибка API погоды: {wx.get('reason', 'неизвестная причина')}"
-
-    cur = wx.get("current") or {}
-    temp = cur.get("temperature_2m")
-    wind = cur.get("wind_speed_10m")
-    code = cur.get("weather_code")
-
-    if temp is None:
-        print("Пустой ответ погоды:", wx)
-        return "Не удалось получить данные о погоде для этого города, попробуйте ещё раз."
-
-    desc = WEATHER_CODES.get(code, "")
-    return f"Погода в {name}:\n🌡 {temp}°C, {desc}\n💨 Ветер: {wind} км/ч"
+    return f"Погода: {text}"
 
 
 # ---------------------------------------------------------------------------
