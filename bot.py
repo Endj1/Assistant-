@@ -207,12 +207,17 @@ def get_weather(city: str) -> str:
         },
         timeout=15,
     ).json()
+
+    if wx.get("error"):
+        return f"Ошибка API погоды: {wx.get('reason', 'неизвестная причина')}"
+
     cur = wx.get("current") or {}
     temp = cur.get("temperature_2m")
     wind = cur.get("wind_speed_10m")
     code = cur.get("weather_code")
 
     if temp is None:
+        print("Пустой ответ погоды:", wx)
         return "Не удалось получить данные о погоде для этого города, попробуйте ещё раз."
 
     desc = WEATHER_CODES.get(code, "")
