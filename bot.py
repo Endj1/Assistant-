@@ -197,15 +197,18 @@ def get_weather(city: str) -> str:
 
     wx = requests.get(
         "https://api.open-meteo.com/v1/forecast",
-        params={"latitude": lat, "longitude": lon, "current_weather": True},
+        params={"latitude": lat, "longitude": lon, "current_weather": "true"},
         timeout=15,
     ).json()
-    cur = wx.get("current_weather", {})
+    cur = wx.get("current_weather") or {}
     temp = cur.get("temperature")
     wind = cur.get("windspeed")
     code = cur.get("weathercode")
-    desc = WEATHER_CODES.get(code, "")
 
+    if temp is None:
+        return "Не удалось получить данные о погоде для этого города, попробуйте ещё раз."
+
+    desc = WEATHER_CODES.get(code, "")
     return f"Погода в {name}:\n🌡 {temp}°C, {desc}\n💨 Ветер: {wind} км/ч"
 
 
