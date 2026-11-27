@@ -1,5 +1,6 @@
-"model": "openai/gpt-oss-120b"
-
+import os
+import requests
+from flask import Flask, request
 app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -30,7 +31,7 @@ def ask_ai(chat_id: int, user_text: str) -> str:
         GROQ_API,
         headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
         json={
-            "model": "llama-3.3-70b-versatile",
+            "model": "openai/gpt-oss-120b",
             "messages": messages,
             "temperature": 0.7,
             "max_tokens": 500,
