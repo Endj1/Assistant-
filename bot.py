@@ -1,6 +1,4 @@
-import os
-import requests
-from flask import Flask, request
+"model": "openai/gpt-oss-120b"
 
 app = Flask(__name__)
 
