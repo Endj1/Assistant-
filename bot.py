@@ -4,7 +4,6 @@ import time
 import base64
 import threading
 from html import unescape
-from urllib.parse import urlparse, parse_qs, unquote
 from xml.etree import ElementTree
 
 import requests
@@ -374,44 +373,31 @@ def transcribe_voice(file_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Веб-поиск (DuckDuckGo HTML, бесплатно, без ключа)
+# Веб-поиск (Google News RSS, бесплатно, без ключа — лучше работает с серверных IP)
 # ---------------------------------------------------------------------------
-def extract_real_url(ddg_url: str) -> str:
-    if ddg_url.startswith("//"):
-        ddg_url = "https:" + ddg_url
-    parsed = urlparse(ddg_url)
-    qs = parse_qs(parsed.query)
-    if "uddg" in qs:
-        return unquote(qs["uddg"][0])
-    return ddg_url
-
-
-def web_search_duckduckgo(query: str, max_results: int = 4):
-    resp = requests.post(
-        "https://html.duckduckgo.com/html/",
-        data={"q": query},
+def web_search_duckduckgo(query: str, max_results: int = 5):
+    resp = requests.get(
+        "https://news.google.com/rss/search",
+        params={"q": query, "hl": "ru", "gl": "RU", "ceid": "RU:ru"},
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
         timeout=15,
     )
     resp.raise_for_status()
 
-    pattern = re.compile(
-        r'<a rel="nofollow" class="result__a" href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>.*?'
-        r'class="result__snippet"[^>]*>(?P<snippet>.*?)</a>',
-        re.S,
-    )
+    root = ElementTree.fromstring(resp.content)
+    items = root.findall(".//item")[:max_results]
+
     results = []
-    for m in pattern.finditer(resp.text):
-        title = unescape(re.sub(r"<[^>]+>", "", m.group("title"))).strip()
-        snippet = unescape(re.sub(r"<[^>]+>", "", m.group("snippet"))).strip()
-        url = extract_real_url(m.group("url"))
-        results.append({"title": title, "snippet": snippet, "url": url})
-        if len(results) >= max_results:
-            break
+    for item in items:
+        title = unescape((item.findtext("title") or "").strip())
+        link = (item.findtext("link") or "").strip()
+        source = item.findtext("source")
+        snippet = f"источник: {source}" if source else ""
+        results.append({"title": title, "snippet": snippet, "url": link})
 
     if not results:
-        print("DuckDuckGo: 0 результатов. Статус:", resp.status_code)
-        print("Первые 500 символов ответа:", resp.text[:500])
+        print("Google News: 0 результатов. Статус:", resp.status_code)
+        print("Первые 300 символов ответа:", resp.text[:300])
 
     return results
 
