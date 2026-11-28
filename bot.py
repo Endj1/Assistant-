@@ -30,6 +30,7 @@ BTN_REMIND = "⏰ Напоминание"
 BTN_WEATHER = "🌤 Погода"
 BTN_NEWS = "📰 Новости"
 BTN_CURRENCY = "💱 Курс валют"
+BTN_QR = "📱 QR-код"
 
 STYLES = {
     "style_none": "",
@@ -54,6 +55,7 @@ awaiting_image_style = set()      # чат нажал "нарисовать", ж
 awaiting_image_prompt = {}        # chat_id -> выбранный стиль, ждём описание
 awaiting_weather = set()          # ждём название города
 awaiting_reminder = set()         # ждём текст напоминания
+awaiting_qr = set()               # ждём текст/ссылку для QR-кода
 
 reminders = []  # список словарей: {chat_id, due_ts, text}
 reminders_lock = threading.Lock()
@@ -72,6 +74,7 @@ def main_keyboard():
             [{"text": BTN_IMAGE}],
             [{"text": BTN_WEATHER}, {"text": BTN_NEWS}],
             [{"text": BTN_REMIND}, {"text": BTN_CURRENCY}],
+            [{"text": BTN_QR}],
         ],
         "resize_keyboard": True,
     }
@@ -227,6 +230,14 @@ def get_news() -> str:
 
 
 # ---------------------------------------------------------------------------
+# QR-код (api.qrserver.com, бесплатно, без ключа)
+# ---------------------------------------------------------------------------
+def generate_qr_url(text: str) -> str:
+    encoded = requests.utils.quote(text)
+    return f"https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={encoded}"
+
+
+# ---------------------------------------------------------------------------
 # Напоминания — фоновый поток проверяет каждые 30 секунд.
 # ВАЖНО: работает только пока сервис не "уснул" (ограничение бесплатного Render).
 # ---------------------------------------------------------------------------
@@ -332,11 +343,12 @@ def webhook():
         awaiting_image_prompt.pop(chat_id, None)
         awaiting_weather.discard(chat_id)
         awaiting_reminder.discard(chat_id)
+        awaiting_qr.discard(chat_id)
         send_message(
             chat_id,
             "Привет! Я ИИ-помощник. Пишите мне что угодно, а кнопками снизу "
-            "можно нарисовать картинку, узнать погоду, новости, курс валют "
-            "или поставить напоминание.",
+            "можно нарисовать картинку, узнать погоду, новости, курс валют, "
+            "сделать QR-код или поставить напоминание.",
             with_keyboard=True,
         )
         return "ok"
@@ -393,6 +405,22 @@ def webhook():
         except Exception as e:
             send_message(chat_id, "Не удалось получить курс валют, попробуйте позже.", with_keyboard=True)
             print("Ошибка курса валют:", e)
+        return "ok"
+
+    # --- Кнопка "QR-код" ---
+    if user_text == BTN_QR:
+        awaiting_qr.add(chat_id)
+        send_message(chat_id, "Напишите текст или ссылку для QR-кода.")
+        return "ok"
+
+    if chat_id in awaiting_qr:
+        awaiting_qr.discard(chat_id)
+        try:
+            qr_url = generate_qr_url(user_text)
+            send_photo(chat_id, qr_url, caption=user_text)
+        except Exception as e:
+            send_message(chat_id, "Не удалось создать QR-код, попробуйте ещё раз.", with_keyboard=True)
+            print("Ошибка QR-кода:", e)
         return "ok"
 
     # --- Кнопка "Напоминание" ---
