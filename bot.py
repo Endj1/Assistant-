@@ -27,7 +27,6 @@ SYSTEM_PROMPT = (
     "от имени владельца аккаунта. Отвечай кратко, вежливо и по делу."
 )
 
-BTN_IMAGE = "🎨 Нарисовать картинку"
 BTN_REMIND = "⏰ Напоминание"
 BTN_WEATHER = "🌤 Погода"
 BTN_NEWS = "📰 Новости"
@@ -53,7 +52,6 @@ STYLE_LABELS = {
 chat_history = {}
 MAX_HISTORY = 6
 
-awaiting_image_style = set()      # чат нажал "нарисовать", ждём выбор стиля
 awaiting_image_prompt = {}        # chat_id -> выбранный стиль, ждём описание
 awaiting_weather = set()          # ждём название города
 awaiting_reminder = set()         # ждём текст напоминания
@@ -73,7 +71,6 @@ stats = {"messages": 0, "images": 0}  # простая статистика дл
 def main_keyboard():
     return {
         "keyboard": [
-            [{"text": BTN_IMAGE}],
             [{"text": BTN_WEATHER}, {"text": BTN_NEWS}],
             [{"text": BTN_REMIND}, {"text": BTN_CURRENCY}],
             [{"text": BTN_QR}],
@@ -354,18 +351,6 @@ threading.Thread(target=reminder_worker, daemon=True).start()
 def webhook():
     update = request.get_json(force=True)
 
-    # Нажатие инлайн-кнопки выбора стиля
-    callback = update.get("callback_query")
-    if callback:
-        chat_id = callback["message"]["chat"]["id"]
-        data = callback.get("data", "")
-        answer_callback(callback["id"])
-        if data in STYLES:
-            awaiting_image_style.discard(chat_id)
-            awaiting_image_prompt[chat_id] = data
-            send_message(chat_id, "Опишите, что нарисовать (например: кот в космосе).")
-        return "ok"
-
     message = update.get("message")
     if not message:
         return "ok"
@@ -454,29 +439,23 @@ def process_text_message(chat_id, user_text, voice_note=False):
 
     # --- /start ---
     if user_text == "/start":
-        awaiting_image_style.discard(chat_id)
         awaiting_image_prompt.pop(chat_id, None)
         awaiting_weather.discard(chat_id)
         awaiting_reminder.discard(chat_id)
         awaiting_qr.discard(chat_id)
         send_message(
             chat_id,
-            "Привет! Я ИИ-помощник. Пишите мне что угодно, а кнопками снизу "
-            "можно нарисовать картинку, узнать погоду, новости, курс валют, "
+            "Привет! Я ИИ-помощник. Пишите мне что угодно.\n\n"
+            "Чтобы получить картинку — просто напишите (или скажите голосом) "
+            "«нарисуй ...» и описание.\n\n"
+            "Кнопками снизу можно узнать погоду, новости, курс валют, "
             "сделать QR-код или поставить напоминание.\n\n"
-            "Также можете просто прислать мне фото — я опишу, что на нём "
-            "(можно добавить подпись с вопросом о картинке).",
+            "Также можете прислать фото — я опишу, что на нём.",
             with_keyboard=True,
         )
         return "ok"
 
-    # --- Кнопка "Нарисовать картинку" -> выбор стиля ---
-    if user_text == BTN_IMAGE:
-        awaiting_image_style.add(chat_id)
-        send_message(chat_id, "Выберите стиль картинки:", reply_markup=style_keyboard())
-        return "ok"
-
-    # --- Команда /image без кнопок (стиль не выбирается) ---
+    # --- Команда /image (стиль не выбирается) ---
     if user_text.startswith("/image"):
         prompt = user_text[len("/image"):].strip()
         if not prompt:
@@ -561,6 +540,21 @@ def process_text_message(chat_id, user_text, voice_note=False):
             with reminders_lock:
                 reminders.append({"chat_id": chat_id, "due_ts": time.time() + minutes * 60, "text": body})
             send_message(chat_id, f"Хорошо, напомню через {minutes} мин: «{body}»", with_keyboard=True)
+        return "ok"
+
+    # --- Естественная просьба нарисовать (из текста или голоса), без кнопки/команды ---
+    draw_match = re.search(
+        r"(нарисуй|нарисовать|сгенерируй\s+картинку|создай\s+картинку)\s*(.*)",
+        user_text,
+        flags=re.IGNORECASE,
+    )
+    if draw_match:
+        description = draw_match.group(2).strip(" .,:;!?")
+        if description:
+            handle_image_generation(chat_id, description, "style_none")
+        else:
+            awaiting_image_prompt[chat_id] = "style_none"
+            send_message(chat_id, "Опишите, что нарисовать.")
         return "ok"
 
     # --- Обычный текстовый ответ через ИИ ---
