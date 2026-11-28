@@ -41,13 +41,6 @@ STYLES = {
     "style_anime": "anime style, vibrant colors, clean lines, studio quality anime art",
     "style_watercolor": "watercolor painting, soft brush strokes, artistic, delicate colors",
 }
-STYLE_LABELS = {
-    "style_none": "Без стиля",
-    "style_realism": "📷 Реализм",
-    "style_anime": "🎌 Аниме",
-    "style_watercolor": "🖌 Акварель",
-}
-
 # ---------------------------------------------------------------------------
 # Память в оперативной памяти процесса (сбрасывается при перезапуске/сне сервиса)
 # ---------------------------------------------------------------------------
@@ -103,19 +96,6 @@ def send_photo(chat_id, photo_url, caption=""):
     )
 
 
-def answer_callback(callback_id):
-    requests.post(
-        f"{TELEGRAM_API}/answerCallbackQuery",
-        json={"callback_query_id": callback_id},
-        timeout=10,
-    )
-
-
-def style_keyboard():
-    row = [{"text": label, "callback_data": key} for key, label in STYLE_LABELS.items()]
-    return {"inline_keyboard": [[r] for r in row]}
-
-
 # ---------------------------------------------------------------------------
 # ИИ-чат (Groq)
 # ---------------------------------------------------------------------------
@@ -165,6 +145,17 @@ def generate_image_url(prompt: str) -> str:
         f"https://image.pollinations.ai/prompt/{encoded}"
         f"?width=1024&height=1024&model=flux&nologo=true&enhance=true"
     )
+
+
+def detect_style(text: str) -> str:
+    low = text.lower()
+    if "аниме" in low:
+        return "style_anime"
+    if "акварел" in low:
+        return "style_watercolor"
+    if "реалист" in low or "фотореалист" in low:
+        return "style_realism"
+    return "style_none"
 
 
 def handle_image_generation(chat_id, raw_prompt, style_key):
@@ -257,7 +248,7 @@ CURRENCY_ALIASES = {
     "cny": "CNY", "юань": "CNY", "юаня": "CNY", "юаней": "CNY", "юани": "CNY",
     "chf": "CHF", "франк": "CHF", "франка": "CHF", "франков": "CHF", "франки": "CHF",
     "kzt": "KZT", "тенге": "KZT",
-    "uah": "UAH", "гривна": "UAH", "гривны": "UAH", "гривен": "UAH", "гривны": "UAH",
+    "uah": "UAH", "гривна": "UAH", "гривны": "UAH", "гривен": "UAH",
     "try": "TRY", "лира": "TRY", "лиры": "TRY", "лир": "TRY",
 }
 
@@ -654,6 +645,15 @@ def process_text_message(chat_id, user_text, voice_note=False):
                 send_message(chat_id, f"Рассылка отправлена. Успешно: {sent}, ошибок: {failed}")
             return "ok"
 
+    # --- Нажатие любой кнопки меню сбрасывает "ожидание" от предыдущей кнопки ---
+    # (иначе, например, нажатие "Погода" во время ожидания текста для QR было бы
+    # воспринято как текст для QR-кода, а не как нажатие кнопки погоды)
+    if user_text in (BTN_WEATHER, BTN_NEWS, BTN_CONVERT, BTN_QR, BTN_REMIND):
+        awaiting_image_prompt.pop(chat_id, None)
+        awaiting_weather.discard(chat_id)
+        awaiting_reminder.discard(chat_id)
+        awaiting_qr.discard(chat_id)
+
     # --- /start ---
     if user_text == "/start":
         awaiting_image_prompt.pop(chat_id, None)
@@ -682,12 +682,14 @@ def process_text_message(chat_id, user_text, voice_note=False):
         if not prompt:
             send_message(chat_id, "Напишите запрос после команды, например:\n/image кот в космосе")
         else:
-            handle_image_generation(chat_id, prompt, "style_none")
+            handle_image_generation(chat_id, prompt, detect_style(prompt))
         return "ok"
 
     # --- Ждём описание картинки после выбора стиля ---
     if chat_id in awaiting_image_prompt:
         style_key = awaiting_image_prompt.pop(chat_id)
+        if style_key == "auto":
+            style_key = detect_style(user_text)
         handle_image_generation(chat_id, user_text, style_key)
         return "ok"
 
@@ -818,9 +820,9 @@ def process_text_message(chat_id, user_text, voice_note=False):
     if draw_match:
         description = draw_match.group(2).strip(" .,:;!?")
         if description:
-            handle_image_generation(chat_id, description, "style_none")
+            handle_image_generation(chat_id, description, detect_style(description))
         else:
-            awaiting_image_prompt[chat_id] = "style_none"
+            awaiting_image_prompt[chat_id] = "auto"
             send_message(chat_id, "Опишите, что нарисовать.")
         return "ok"
 
