@@ -30,7 +30,7 @@ SYSTEM_PROMPT = (
 BTN_REMIND = "⏰ Напоминание"
 BTN_WEATHER = "🌤 Погода"
 BTN_NEWS = "📰 Новости"
-BTN_CURRENCY = "💱 Курс валют"
+BTN_CONVERT = "🔄 Конвертер"
 BTN_QR = "📱 QR-код"
 
 STYLES = {
@@ -72,7 +72,7 @@ def main_keyboard():
     return {
         "keyboard": [
             [{"text": BTN_WEATHER}, {"text": BTN_NEWS}],
-            [{"text": BTN_REMIND}, {"text": BTN_CURRENCY}],
+            [{"text": BTN_REMIND}, {"text": BTN_CONVERT}],
             [{"text": BTN_QR}],
         ],
         "resize_keyboard": True,
@@ -244,17 +244,77 @@ def get_weather(city: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Курс валют (open.er-api.com, бесплатно, без ключа)
+# Конвертер валют и единиц измерения
 # ---------------------------------------------------------------------------
-def get_currency_rates() -> str:
-    data = requests.get("https://open.er-api.com/v6/latest/USD", timeout=15).json()
-    rates = data.get("rates", {})
-    usd_rub = rates.get("RUB")
-    eur_usd = rates.get("EUR")
-    if not usd_rub or not eur_usd:
-        return "Не удалось получить курс валют, попробуйте позже."
-    eur_rub = usd_rub / eur_usd
-    return f"💱 Курс валют:\nUSD → {usd_rub:.2f} ₽\nEUR → {eur_rub:.2f} ₽"
+CURRENCY_ALIASES = {
+    "usd": "USD", "доллар": "USD", "доллара": "USD", "долларов": "USD", "доллары": "USD", "баксов": "USD", "баксы": "USD", "$": "USD",
+    "eur": "EUR", "евро": "EUR", "€": "EUR",
+    "rub": "RUB", "руб": "RUB", "рубль": "RUB", "рубля": "RUB", "рублей": "RUB", "рубли": "RUB", "₽": "RUB",
+    "gbp": "GBP", "фунт": "GBP", "фунта": "GBP", "фунтов": "GBP", "фунты": "GBP",
+    "jpy": "JPY", "иена": "JPY", "йена": "JPY", "иен": "JPY", "иены": "JPY",
+    "cny": "CNY", "юань": "CNY", "юаня": "CNY", "юаней": "CNY", "юани": "CNY",
+    "chf": "CHF", "франк": "CHF", "франка": "CHF", "франков": "CHF", "франки": "CHF",
+    "kzt": "KZT", "тенге": "KZT",
+    "uah": "UAH", "гривна": "UAH", "гривны": "UAH", "гривен": "UAH", "гривны": "UAH",
+    "try": "TRY", "лира": "TRY", "лиры": "TRY", "лир": "TRY",
+}
+
+# категория -> {единица: коэффициент пересчёта в базовую единицу категории}
+UNIT_CATEGORIES = {
+    "length": {  # база — метр
+        "km": 1000, "км": 1000, "m": 1, "м": 1, "cm": 0.01, "см": 0.01, "mm": 0.001, "мм": 0.001,
+        "mile": 1609.34, "miles": 1609.34, "миля": 1609.34, "мили": 1609.34, "милю": 1609.34,
+        "ft": 0.3048, "foot": 0.3048, "фут": 0.3048, "футов": 0.3048, "фута": 0.3048,
+        "in": 0.0254, "inch": 0.0254, "дюйм": 0.0254, "дюйма": 0.0254, "дюймов": 0.0254,
+        "yd": 0.9144, "yard": 0.9144, "ярд": 0.9144, "ярда": 0.9144, "ярдов": 0.9144,
+    },
+    "weight": {  # база — килограмм
+        "kg": 1, "кг": 1, "g": 0.001, "г": 0.001, "гр": 0.001, "грамм": 0.001, "граммов": 0.001, "граммы": 0.001,
+        "lb": 0.453592, "lbs": 0.453592, "фунт": 0.453592, "фунта": 0.453592, "фунтов": 0.453592, "фунты": 0.453592,
+        "oz": 0.0283495, "унция": 0.0283495, "унций": 0.0283495, "унции": 0.0283495,
+        "тонна": 1000, "тонны": 1000, "тонн": 1000, "t": 1000,
+    },
+    "volume": {  # база — литр
+        "l": 1, "л": 1, "литр": 1, "литра": 1, "литров": 1,
+        "ml": 0.001, "мл": 0.001,
+        "gal": 3.78541, "галлон": 3.78541, "галлона": 3.78541, "галлонов": 3.78541,
+    },
+}
+
+
+def normalize_token(tok: str) -> str:
+    return tok.strip().lower().rstrip(".,!?")
+
+
+def convert_units(amount: float, from_tok: str, to_tok: str):
+    """Пробует сконвертировать как единицы измерения. Возвращает число или None."""
+    f, t = normalize_token(from_tok), normalize_token(to_tok)
+
+    # Температура — особый случай (не линейный коэффициент)
+    temp_c = {"c", "°c", "цельсий", "цельсия"}
+    temp_f = {"f", "°f", "фаренгейт", "фаренгейта"}
+    if f in temp_c and t in temp_f:
+        return amount * 9 / 5 + 32
+    if f in temp_f and t in temp_c:
+        return (amount - 32) * 5 / 9
+
+    for factors in UNIT_CATEGORIES.values():
+        if f in factors and t in factors:
+            return amount * factors[f] / factors[t]
+    return None
+
+
+def convert_currency(amount: float, from_tok: str, to_tok: str):
+    """Пробует сконвертировать как валюту. Возвращает число или None."""
+    f_code = CURRENCY_ALIASES.get(normalize_token(from_tok))
+    t_code = CURRENCY_ALIASES.get(normalize_token(to_tok))
+    if not f_code or not t_code:
+        return None
+    data = requests.get(f"https://open.er-api.com/v6/latest/{f_code}", timeout=15).json()
+    rate = (data.get("rates") or {}).get(t_code)
+    if rate is None:
+        return None
+    return amount * rate
 
 
 # ---------------------------------------------------------------------------
@@ -448,8 +508,10 @@ def process_text_message(chat_id, user_text, voice_note=False):
             "Привет! Я ИИ-помощник. Пишите мне что угодно.\n\n"
             "Чтобы получить картинку — просто напишите (или скажите голосом) "
             "«нарисуй ...» и описание.\n\n"
-            "Кнопками снизу можно узнать погоду, новости, курс валют, "
+            "Кнопками снизу можно узнать погоду, новости, "
             "сделать QR-код или поставить напоминание.\n\n"
+            "Конвертер валют и единиц работает прямо по тексту — просто "
+            "напишите, например: «100 USD в рубли» или «5 км в мили».\n\n"
             "Также можете прислать фото — я опишу, что на нём.",
             with_keyboard=True,
         )
@@ -494,14 +556,42 @@ def process_text_message(chat_id, user_text, voice_note=False):
             print("Ошибка новостей:", e)
         return "ok"
 
-    # --- Кнопка "Курс валют" ---
-    if user_text == BTN_CURRENCY:
-        try:
-            send_message(chat_id, get_currency_rates(), with_keyboard=True)
-        except Exception as e:
-            send_message(chat_id, "Не удалось получить курс валют, попробуйте позже.", with_keyboard=True)
-            print("Ошибка курса валют:", e)
+    # --- Кнопка "Конвертер" — просто подсказка, сам конвертер работает по тексту ниже ---
+    if user_text == BTN_CONVERT:
+        send_message(
+            chat_id,
+            "Просто напишите, что перевести, например:\n"
+            "«100 USD в рубли»\n«5 км в мили»\n«20 C в F»\n«2 кг в фунты»",
+            with_keyboard=True,
+        )
         return "ok"
+
+    # --- Конвертер валют/единиц по свободному тексту: "100 USD в рубли" ---
+    convert_match = re.match(
+        r"^\s*([\d]+(?:[.,]\d+)?)\s*([^\s\d]+)\s+(?:в|to|->)\s+([^\s\d]+)\s*$",
+        user_text,
+        flags=re.IGNORECASE,
+    )
+    if convert_match:
+        amount = float(convert_match.group(1).replace(",", "."))
+        from_unit, to_unit = convert_match.group(2), convert_match.group(3)
+
+        result = None
+        try:
+            result = convert_currency(amount, from_unit, to_unit)
+            if result is None:
+                result = convert_units(amount, from_unit, to_unit)
+        except Exception as e:
+            print("Ошибка конвертера:", e)
+
+        if result is not None:
+            send_message(
+                chat_id,
+                f"{amount:g} {from_unit} = {result:.2f} {to_unit}",
+                with_keyboard=True,
+            )
+            return "ok"
+        # если не распознали — просто идём дальше (например, это был обычный вопрос к ИИ)
 
     # --- Кнопка "QR-код" ---
     if user_text == BTN_QR:
