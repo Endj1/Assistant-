@@ -408,6 +408,11 @@ def web_search_duckduckgo(query: str, max_results: int = 4):
         results.append({"title": title, "snippet": snippet, "url": url})
         if len(results) >= max_results:
             break
+
+    if not results:
+        print("DuckDuckGo: 0 результатов. Статус:", resp.status_code)
+        print("Первые 500 символов ответа:", resp.text[:500])
+
     return results
 
 
