@@ -286,6 +286,35 @@ def generate_qr_url(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Голосовые сообщения (Groq Whisper, бесплатно, в рамках того же GROQ_API_KEY)
+# ---------------------------------------------------------------------------
+GROQ_TRANSCRIBE_API = "https://api.groq.com/openai/v1/audio/transcriptions"
+GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
+
+
+def download_telegram_file_bytes(file_id: str) -> bytes:
+    file_info = requests.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id}, timeout=15).json()
+    file_path = file_info["result"]["file_path"]
+    file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+    resp = requests.get(file_url, timeout=30)
+    resp.raise_for_status()
+    return resp.content
+
+
+def transcribe_voice(file_id: str) -> str:
+    audio_bytes = download_telegram_file_bytes(file_id)
+    resp = requests.post(
+        GROQ_TRANSCRIBE_API,
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+        files={"file": ("voice.ogg", audio_bytes, "audio/ogg")},
+        data={"model": GROQ_WHISPER_MODEL, "response_format": "json"},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json().get("text", "").strip()
+
+
+# ---------------------------------------------------------------------------
 # Напоминания — фоновый поток проверяет каждые 30 секунд.
 # ВАЖНО: работает только пока сервис не "уснул" (ограничение бесплатного Render).
 # ---------------------------------------------------------------------------
@@ -352,6 +381,23 @@ def webhook():
         handle_photo_message(chat_id, largest["file_id"], caption)
         return "ok"
 
+    # --- Пользователь прислал голосовое сообщение — распознаём речь ---
+    if "voice" in message:
+        chat_id = message["chat"]["id"]
+        known_users.add(chat_id)
+        stats["messages"] += 1
+        try:
+            recognized = transcribe_voice(message["voice"]["file_id"])
+        except Exception as e:
+            send_message(chat_id, "Не удалось распознать голосовое сообщение, попробуйте ещё раз.", with_keyboard=True)
+            print("Ошибка распознавания голоса:", e)
+            return "ok"
+        if not recognized:
+            send_message(chat_id, "Не удалось разобрать речь, попробуйте сказать чётче.", with_keyboard=True)
+            return "ok"
+        process_text_message(chat_id, recognized, voice_note=True)
+        return "ok"
+
     if "text" not in message:
         return "ok"
 
@@ -359,6 +405,13 @@ def webhook():
     user_text = message["text"].strip()
     known_users.add(chat_id)
     stats["messages"] += 1
+    process_text_message(chat_id, user_text)
+    return "ok"
+
+
+def process_text_message(chat_id, user_text, voice_note=False):
+    if voice_note:
+        send_message(chat_id, f"🎤 Распознано: «{user_text}»")
 
     # --- /whoami — узнать свой chat_id (нужен, чтобы настроить ADMIN_CHAT_ID) ---
     if user_text == "/whoami":
