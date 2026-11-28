@@ -3,6 +3,8 @@ import re
 import time
 import base64
 import threading
+from html import unescape
+from urllib.parse import urlparse, parse_qs, unquote
 from xml.etree import ElementTree
 
 import requests
@@ -372,6 +374,74 @@ def transcribe_voice(file_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Веб-поиск (DuckDuckGo HTML, бесплатно, без ключа)
+# ---------------------------------------------------------------------------
+def extract_real_url(ddg_url: str) -> str:
+    if ddg_url.startswith("//"):
+        ddg_url = "https:" + ddg_url
+    parsed = urlparse(ddg_url)
+    qs = parse_qs(parsed.query)
+    if "uddg" in qs:
+        return unquote(qs["uddg"][0])
+    return ddg_url
+
+
+def web_search_duckduckgo(query: str, max_results: int = 4):
+    resp = requests.post(
+        "https://html.duckduckgo.com/html/",
+        data={"q": query},
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+
+    pattern = re.compile(
+        r'<a rel="nofollow" class="result__a" href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>.*?'
+        r'class="result__snippet"[^>]*>(?P<snippet>.*?)</a>',
+        re.S,
+    )
+    results = []
+    for m in pattern.finditer(resp.text):
+        title = unescape(re.sub(r"<[^>]+>", "", m.group("title"))).strip()
+        snippet = unescape(re.sub(r"<[^>]+>", "", m.group("snippet"))).strip()
+        url = extract_real_url(m.group("url"))
+        results.append({"title": title, "snippet": snippet, "url": url})
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def answer_with_web_search(chat_id, query):
+    try:
+        results = web_search_duckduckgo(query)
+    except Exception as e:
+        print("Ошибка веб-поиска:", e)
+        results = []
+
+    if not results:
+        send_message(chat_id, "Не удалось найти информацию по запросу, попробуйте переформулировать.", with_keyboard=True)
+        return
+
+    context_lines = [f"- {r['title']}: {r['snippet']} (источник: {r['url']})" for r in results]
+    context_text = "\n".join(context_lines)
+
+    instruction = (
+        "Ты отвечаешь на вопрос пользователя, опираясь ТОЛЬКО на результаты веб-поиска ниже. "
+        "Отвечай кратко и по делу на русском языке. В конце укажи 1-2 ссылки на источники. "
+        "Если в результатах нет ответа на вопрос, честно скажи, что не нашёл точной информации."
+    )
+    prompt = f"Результаты поиска по запросу «{query}»:\n{context_text}\n\nВопрос пользователя: {query}"
+
+    try:
+        answer = ask_ai(chat_id=-2, user_text=prompt, system=instruction, remember=False)
+    except Exception as e:
+        print("Ошибка формирования ответа по поиску:", e)
+        answer = context_text
+
+    send_message(chat_id, answer, with_keyboard=True)
+
+
+# ---------------------------------------------------------------------------
 # Напоминания — фоновый поток проверяет каждые 30 секунд.
 # ВАЖНО: работает только пока сервис не "уснул" (ограничение бесплатного Render).
 # ---------------------------------------------------------------------------
@@ -512,7 +582,9 @@ def process_text_message(chat_id, user_text, voice_note=False):
             "сделать QR-код или поставить напоминание.\n\n"
             "Конвертер валют и единиц работает прямо по тексту — просто "
             "напишите, например: «100 USD в рубли» или «5 км в мили».\n\n"
-            "Также можете прислать фото — я опишу, что на нём.",
+            "Также можете прислать фото — я опишу, что на нём.\n\n"
+            "А если нужна свежая информация из интернета — напишите "
+            "«найди ...» или «поищи ...».",
             with_keyboard=True,
         )
         return "ok"
@@ -630,6 +702,18 @@ def process_text_message(chat_id, user_text, voice_note=False):
             with reminders_lock:
                 reminders.append({"chat_id": chat_id, "due_ts": time.time() + minutes * 60, "text": body})
             send_message(chat_id, f"Хорошо, напомню через {minutes} мин: «{body}»", with_keyboard=True)
+        return "ok"
+
+    # --- Просьба найти информацию в интернете ---
+    search_match = re.match(
+        r"^(?:найди|поищи|загугли|погугли|search)\s+(.+)$",
+        user_text,
+        flags=re.IGNORECASE,
+    )
+    if search_match:
+        query = search_match.group(1).strip()
+        send_message(chat_id, "Ищу информацию...")
+        answer_with_web_search(chat_id, query)
         return "ok"
 
     # --- Естественная просьба нарисовать (из текста или голоса), без кнопки/команды ---
