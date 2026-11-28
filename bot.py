@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import base64
 import threading
 from xml.etree import ElementTree
 
@@ -16,6 +17,7 @@ ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")  # ваш личный chat_id, 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 GROQ_API = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # ---------------------------------------------------------------------------
 # Системная инструкция — поведение бота. Отредактируйте под себя.
@@ -180,6 +182,52 @@ def handle_image_generation(chat_id, raw_prompt, style_key):
 
 
 # ---------------------------------------------------------------------------
+# Понимание картинок (Groq, модель с поддержкой зрения)
+# ---------------------------------------------------------------------------
+def download_telegram_photo_b64(file_id: str) -> str:
+    file_info = requests.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id}, timeout=15).json()
+    file_path = file_info["result"]["file_path"]
+    file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+    img_resp = requests.get(file_url, timeout=30)
+    img_resp.raise_for_status()
+    return base64.b64encode(img_resp.content).decode()
+
+
+def analyze_image(b64_image: str, question: str) -> str:
+    resp = requests.post(
+        GROQ_API,
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+        json={
+            "model": GROQ_VISION_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": question},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
+                    ],
+                }
+            ],
+            "max_tokens": 600,
+        },
+        timeout=45,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+def handle_photo_message(chat_id, file_id, caption):
+    question = caption.strip() if caption else "Опиши, что изображено на этой картинке, подробно и на русском языке."
+    try:
+        b64_image = download_telegram_photo_b64(file_id)
+        answer = analyze_image(b64_image, question)
+        send_message(chat_id, answer, with_keyboard=True)
+    except Exception as e:
+        send_message(chat_id, "Не удалось обработать картинку, попробуйте ещё раз.", with_keyboard=True)
+        print("Ошибка анализа картинки:", e)
+
+
+# ---------------------------------------------------------------------------
 # Погода (wttr.in, бесплатно, без ключа и без общего дневного лимита)
 # ---------------------------------------------------------------------------
 def get_weather(city: str) -> str:
@@ -290,7 +338,21 @@ def webhook():
         return "ok"
 
     message = update.get("message")
-    if not message or "text" not in message:
+    if not message:
+        return "ok"
+
+    # --- Пользователь прислал фото — анализируем через ИИ ---
+    if "photo" in message:
+        chat_id = message["chat"]["id"]
+        known_users.add(chat_id)
+        stats["messages"] += 1
+        photo_sizes = message["photo"]
+        largest = photo_sizes[-1]  # Telegram отдаёт размеры по возрастанию
+        caption = message.get("caption", "")
+        handle_photo_message(chat_id, largest["file_id"], caption)
+        return "ok"
+
+    if "text" not in message:
         return "ok"
 
     chat_id = message["chat"]["id"]
@@ -348,7 +410,9 @@ def webhook():
             chat_id,
             "Привет! Я ИИ-помощник. Пишите мне что угодно, а кнопками снизу "
             "можно нарисовать картинку, узнать погоду, новости, курс валют, "
-            "сделать QR-код или поставить напоминание.",
+            "сделать QR-код или поставить напоминание.\n\n"
+            "Также можете просто прислать мне фото — я опишу, что на нём "
+            "(можно добавить подпись с вопросом о картинке).",
             with_keyboard=True,
         )
         return "ok"
