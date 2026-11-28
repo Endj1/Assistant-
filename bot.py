@@ -3,6 +3,7 @@ import re
 import time
 import base64
 import threading
+from datetime import datetime, timedelta, timezone
 from html import unescape
 from xml.etree import ElementTree
 
@@ -373,6 +374,100 @@ def transcribe_voice(file_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Афиша мероприятий (KudaGo, бесплатно, без ключа — Москва, СПб и другие города РФ)
+# ---------------------------------------------------------------------------
+MSK_TZ = timezone(timedelta(hours=3))
+
+KUDAGO_CITY_SLUGS = {
+    "москва": "msk", "москве": "msk", "мск": "msk",
+    "санкт-петербург": "spb", "питер": "spb", "питере": "spb", "петербург": "spb", "петербурге": "spb", "спб": "spb",
+    "новосибирск": "nsk", "новосибирске": "nsk",
+    "екатеринбург": "ekb", "екатеринбурге": "ekb",
+    "нижний новгород": "nnv",
+    "казань": "kzn", "казани": "kzn",
+    "краснодар": "krd", "краснодаре": "krd",
+    "сочи": "sochi",
+    "калининград": "kld", "калининграде": "kld",
+    "самара": "samara", "самаре": "samara",
+    "уфа": "ufa", "уфе": "ufa",
+}
+
+
+def detect_city_slug(text: str) -> str:
+    lower = text.lower()
+    for name, slug in KUDAGO_CITY_SLUGS.items():
+        if name in lower:
+            return slug
+    return "msk"  # по умолчанию Москва
+
+
+def day_bounds(offset_days: int):
+    now = datetime.now(MSK_TZ)
+    day = (now + timedelta(days=offset_days)).date()
+    start = datetime(day.year, day.month, day.day, 0, 0, 0, tzinfo=MSK_TZ)
+    end = start + timedelta(days=1)
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def get_events(user_text: str) -> str:
+    lower = user_text.lower()
+    city_slug = detect_city_slug(user_text)
+
+    if "послезавтра" in lower:
+        since, until = day_bounds(2)
+        period_label = "послезавтра"
+    elif "завтра" in lower:
+        since, until = day_bounds(1)
+        period_label = "завтра"
+    else:
+        since, until = day_bounds(0)
+        period_label = "сегодня"
+
+    resp = requests.get(
+        "https://kudago.com/public-api/v1.4/events/",
+        params={
+            "location": city_slug,
+            "actual_since": since,
+            "actual_until": until,
+            "fields": "title,place,dates,price",
+            "page_size": 6,
+            "order_by": "-publication_date",
+            "lang": "ru",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    events = data.get("results", [])
+
+    if not events:
+        print("KudaGo: 0 мероприятий. Статус:", resp.status_code, "Город:", city_slug)
+        return f"Не нашёл мероприятий на {period_label} в этом городе."
+
+    lines = [f"🎭 Мероприятия на {period_label}:\n"]
+    for ev in events:
+        title = ev.get("title", "Без названия")
+        place = (ev.get("place") or {}).get("title", "")
+        price = ev.get("price", "")
+        line = f"• {title}"
+        if place:
+            line += f" — {place}"
+        if price:
+            line += f" ({price})"
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+def handle_events_request(chat_id, user_text):
+    try:
+        send_message(chat_id, get_events(user_text), with_keyboard=True)
+    except Exception as e:
+        send_message(chat_id, "Не удалось получить афишу мероприятий, попробуйте позже.", with_keyboard=True)
+        print("Ошибка афиши мероприятий:", e)
+
+
+# ---------------------------------------------------------------------------
 # Веб-поиск (Google News RSS, бесплатно, без ключа — лучше работает с серверных IP)
 # ---------------------------------------------------------------------------
 def web_search_duckduckgo(query: str, max_results: int = 5):
@@ -694,6 +789,12 @@ def process_text_message(chat_id, user_text, voice_note=False):
             with reminders_lock:
                 reminders.append({"chat_id": chat_id, "due_ts": time.time() + minutes * 60, "text": body})
             send_message(chat_id, f"Хорошо, напомню через {minutes} мин: «{body}»", with_keyboard=True)
+        return "ok"
+
+    # --- Вопрос про мероприятия/афишу — раньше общего поиска ---
+    if re.search(r"мероприят|афиш|куда сходить|куда пойти|концерт|выставк", user_text, flags=re.IGNORECASE):
+        send_message(chat_id, "Смотрю афишу...")
+        handle_events_request(chat_id, user_text)
         return "ok"
 
     # --- Просьба найти информацию в интернете ---
