@@ -60,6 +60,8 @@ reminders_lock = threading.Lock()
 
 known_users = set()  # все chat_id, кто писал боту — для рассылки (/broadcast)
 
+stats = {"messages": 0, "images": 0}  # простая статистика для /stats (только для админа)
+
 
 # ---------------------------------------------------------------------------
 # Вспомогательные функции Telegram
@@ -168,6 +170,7 @@ def handle_image_generation(chat_id, raw_prompt, style_key):
         final_prompt = enhance_image_prompt(raw_prompt, style_suffix)
         photo_url = generate_image_url(final_prompt)
         send_photo(chat_id, photo_url, caption=raw_prompt)
+        stats["images"] += 1
     except Exception as e:
         send_message(chat_id, "Не удалось создать картинку, попробуйте ещё раз.", with_keyboard=True)
         print("Ошибка генерации картинки:", e)
@@ -282,11 +285,26 @@ def webhook():
     chat_id = message["chat"]["id"]
     user_text = message["text"].strip()
     known_users.add(chat_id)
+    stats["messages"] += 1
 
     # --- /whoami — узнать свой chat_id (нужен, чтобы настроить ADMIN_CHAT_ID) ---
     if user_text == "/whoami":
         send_message(chat_id, f"Ваш chat_id: {chat_id}")
         return "ok"
+
+    # --- /stats — статистика бота, доступна только владельцу ---
+    if user_text == "/stats":
+        if ADMIN_CHAT_ID and str(chat_id) == str(ADMIN_CHAT_ID):
+            send_message(
+                chat_id,
+                "📊 Статистика бота:\n"
+                f"👥 Пользователей: {len(known_users)}\n"
+                f"💬 Сообщений обработано: {stats['messages']}\n"
+                f"🎨 Картинок сгенерировано: {stats['images']}\n"
+                f"⏰ Активных напоминаний: {len(reminders)}",
+            )
+            return "ok"
+        # для всех остальных команда как будто не существует — просто идём дальше
 
     # --- /broadcast — рассылка всем пользователям, доступна только владельцу ---
     if user_text.startswith("/broadcast"):
